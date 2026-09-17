@@ -38,14 +38,31 @@ door while it's opening.
 This fork also makes "resume from a stopped, partial position" aware of
 which direction the door was actually moving before it stopped (tracked
 internally), so reversing from a stop is a clean single press in whichever
-direction is actually a reversal. One case remains an inherent hardware
-limit rather than something software can paper over: resuming the *same*
-direction the door was already moving in before an explicit stop needs
-three presses on this kind of toggle motor (stop → reverse → stop →
-reverse), and the component only has single- and double-press actions.
-That case falls back to a best-effort double press, which will look like a
-brief flinch the wrong way before it settles in the direction you asked
-for.
+direction is actually a reversal.
+
+Resuming the *same* direction the door was already moving in before an
+explicit stop is a different case: on this kind of toggle motor, the next
+press after a stop always reverses, so getting back to the original
+direction takes stop → reverse → stop → reverse -- three presses, not two.
+This fork adds an optional `triple_press_action` for exactly that case
+(see the [`cover` platform table](#cover-platform-gdo)); if it's not
+configured, that case falls back to a best-effort double press, which only
+gets as far as reversing briefly the wrong way and then stopping again,
+rather than actually continuing -- so if you noticed something like
+"tell it to go to 75%, then while it's moving tell it to go to 25%, then
+once that's done tell it to go back to 75% -- it doesn't correctly resume
+opening," that's this case, and configuring `triple_press_action` fixes it.
+
+Both `double_press_action` and (if configured) `triple_press_action` also
+need their own `..._settle` value (`double_press_settle` /
+`triple_press_settle`). The door is mechanically stationary for the whole
+gap between a multi-click action's presses -- the earlier clicks just
+stop/reverse it, only the *last* click actually starts it moving the
+requested direction -- and without telling the position tracker that, it
+assumes movement started the instant the command was issued, which can
+race ahead of the door and even cancel the action's own later clicks
+before they fire. Set each `..._settle` a little above the total delay
+inside the matching action.
 
 If your opener matches the *original* button behavior (closing + single
 press reopens it, no stop phase), use upstream instead -- this fork's fixes
@@ -57,19 +74,24 @@ Add the component to your config:
 
 ```yaml
 external_components:
-  - source: github://fma965/esphome-gdo@main
+  - source: github://<your-github-username>/esphome-gdo@main
 ```
+
+(Replace `<your-github-username>` with wherever you push this fork.)
 
 ### `cover` platform `gdo`
 
-| Option                | Type     | Description                                                        |
-|-----------------------|----------|--------------------------------------------------------------------|
-| `open_duration`       | Required | Time the door takes to travel from fully closed to fully open.     |
-| `close_duration`      | Required | Time the door takes to travel from fully open to fully closed.     |
-| `single_press_action` | Required | Automation that pulses the relay once.                             |
-| `double_press_action` | Required | Automation that pulses the relay twice.                            |
-| `open_endstop`        | Optional | ID of a binary sensor that reads on when the door is fully open.   |
-| `close_endstop`       | Optional | ID of a binary sensor that reads on when the door is fully closed. |
+| Option                  | Type     | Description                                                                                                     |
+|-------------------------|----------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| `open_duration`         | Required | Time the door takes to travel from fully closed to fully open.                                                                            |
+| `close_duration`        | Required | Time the door takes to travel from fully open to fully closed.                                                                            |
+| `single_press_action`   | Required | Automation that pulses the relay once.                                                                                                    |
+| `double_press_action`   | Required | Automation that pulses the relay twice, for reversing direction while moving.                                                             |
+| `double_press_settle`   | Optional | How long `double_press_action` takes before its *last* click actually starts the door moving. See [Changes in this fork](#changes-in-this-fork). Defaults to `0ms`. |
+| `triple_press_action`   | Optional | Automation that pulses the relay three times, for resuming the same direction after a stop. See [Changes in this fork](#changes-in-this-fork). |
+| `triple_press_settle`   | Optional | Same idea as `double_press_settle`, for `triple_press_action`. Defaults to `0ms`.                                                          |
+| `open_endstop`          | Optional | ID of a binary sensor that reads on when the door is fully open.                                                                          |
+| `close_endstop`         | Optional | ID of a binary sensor that reads on when the door is fully closed.                                                                        |
 
 At least one of `open_endstop` / `close_endstop` is required. Without one the
 position estimate can never be corrected, so it drifts.
@@ -108,7 +130,6 @@ Defaults to `device_class: problem` and `entity_category: diagnostic`.
 
 ## Credits
 
-- Claude Sonnet for clanking away with me while i figured out what i needed!
 - Forked from [tronikos/esphome-gdo](https://github.com/tronikos/esphome-gdo).
 - Adopted from [Endstop Cover](https://esphome.io/components/cover/endstop) and [Time Based Cover](https://esphome.io/components/cover/time_based).
 - The circuit for the obstruction sensor is from [rat-ratgdo](https://github.com/Kaldek/rat-ratgdo).

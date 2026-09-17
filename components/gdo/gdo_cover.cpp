@@ -247,19 +247,24 @@ void GdoCover::start_direction_(CoverOperation dir, bool perform_trigger) {
             // reversal, one press does it.
             ESP_LOGI(TAG, "Door is partially open (was closing). Asked to open: single press.");
             trig = &this->single_press_trigger_;
-          } else {
+          } else if (this->has_triple_press_action_) {
             // PATCHED: stopped mid-open, now asked to open (i.e. "keep
             // going the way it was already going"). On a motor where the
             // very next press always reverses, resuming the SAME direction
-            // actually needs stop -> reverse -> stop -> reverse, i.e. three
-            // presses. This component only has single/double press actions,
-            // so this specific case can't be done cleanly -- double press
-            // is the closest available approximation and will look like a
-            // brief flinch the wrong way before settling. If you hit this
-            // in practice, say so and we can add a third press stage.
+            // needs stop -> reverse -> stop -> reverse, i.e. three presses --
+            // that's what triple_press_action is for.
+            ESP_LOGI(TAG, "Door is partially open (was opening). Asked to open more: triple press.");
+            trig = &this->triple_press_trigger_;
+          } else {
+            // No triple_press_action configured: fall back to the old
+            // best-effort double press, which only gets as far as reversing
+            // briefly the wrong way and then stopping again, instead of
+            // actually resuming. Configure triple_press_action to fix this.
             ESP_LOGW(TAG, "Door is partially open (was opening). Asked to open more: "
-                          "this toggle motor can't resume the same direction after a "
-                          "stop without a 3rd press -- expect a brief flinch.");
+                          "this toggle motor needs a 3rd press to resume the same "
+                          "direction after a stop, and no triple_press_action is "
+                          "configured -- falling back to a double press, which will "
+                          "just flinch the wrong way and stop again.");
             trig = &this->double_press_trigger_;
           }
           break;
@@ -289,12 +294,17 @@ void GdoCover::start_direction_(CoverOperation dir, bool perform_trigger) {
             // one press does it.
             ESP_LOGI(TAG, "Door is partially open (was opening). Asked to close: single press.");
             trig = &this->single_press_trigger_;
+          } else if (this->has_triple_press_action_) {
+            // PATCHED: same "resume the same direction" case as above,
+            // mirrored for closing -- triple press actually continues it.
+            ESP_LOGI(TAG, "Door is partially open (was closing). Asked to close more: triple press.");
+            trig = &this->triple_press_trigger_;
           } else {
-            // PATCHED: same "resume the same direction" limitation as
-            // above, mirrored for closing.
             ESP_LOGW(TAG, "Door is partially open (was closing). Asked to close more: "
-                          "this toggle motor can't resume the same direction after a "
-                          "stop without a 3rd press -- expect a brief flinch.");
+                          "this toggle motor needs a 3rd press to resume the same "
+                          "direction after a stop, and no triple_press_action is "
+                          "configured -- falling back to a double press, which will "
+                          "just flinch the wrong way and stop again.");
             trig = &this->double_press_trigger_;
           }
           break;
@@ -317,6 +327,20 @@ void GdoCover::start_direction_(CoverOperation dir, bool perform_trigger) {
   const uint32_t now = millis();
   this->start_dir_time_ = now;
   this->last_recompute_time_ = now;
+
+  // A double or triple press leaves the door mechanically stationary until
+  // its final click, *_settle_ later -- hold off crediting any position
+  // change until then, or the estimate races ahead of a door that hasn't
+  // actually started moving yet (and can even fool is_at_target_() into
+  // firing a stop before the reversal's own final click has happened).
+  // A single press has no such gap, so this is a no-op in that case.
+  if (trig == &this->double_press_trigger_) {
+    this->settle_until_ = now + this->double_press_settle_;
+  } else if (trig == &this->triple_press_trigger_) {
+    this->settle_until_ = now + this->triple_press_settle_;
+  } else {
+    this->settle_until_ = now;
+  }
 
   if (perform_trigger) {
     this->stop_prev_trigger_();
@@ -352,6 +376,16 @@ void GdoCover::recompute_position_() {
       return;
   }
   const uint32_t now = millis();
+  if (now < this->settle_until_) {
+    // Still inside a double or triple press's mechanical dead time: the
+    // door hasn't actually started moving in this direction yet, so credit
+    // nothing for this tick. Still advance last_recompute_time_ so the
+    // settled time isn't retroactively counted once we pass settle_until_
+    // -- it was real elapsed time, it just didn't correspond to any door
+    // movement.
+    this->last_recompute_time_ = now;
+    return;
+  }
   this->position += dir * (now - this->last_recompute_time_) / action_dur;
   this->position = clamp(this->position, min_pos, max_pos);
   this->last_recompute_time_ = now;

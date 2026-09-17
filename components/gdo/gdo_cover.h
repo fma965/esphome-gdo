@@ -17,10 +17,21 @@ class GdoCover : public cover::Cover, public Component {
 
   Trigger<> *get_single_press_trigger() { return &this->single_press_trigger_; }
   Trigger<> *get_double_press_trigger() { return &this->double_press_trigger_; }
+  Trigger<> *get_triple_press_trigger() { return &this->triple_press_trigger_; }
   void set_open_endstop(binary_sensor::BinarySensor *open_endstop) { this->open_endstop_ = open_endstop; }
   void set_close_endstop(binary_sensor::BinarySensor *close_endstop) { this->close_endstop_ = close_endstop; }
   void set_open_duration(uint32_t open_duration) { this->open_duration_ = open_duration; }
   void set_close_duration(uint32_t close_duration) { this->close_duration_ = close_duration; }
+  // How long double_press_action's own two-click gap is -- see the
+  // CONF_DOUBLE_PRESS_SETTLE comment in cover.py.
+  void set_double_press_settle(uint32_t double_press_settle) { this->double_press_settle_ = double_press_settle; }
+  // Whether triple_press_action was configured at all -- see the
+  // CONF_TRIPLE_PRESS_ACTION comment in cover.py. Without it, "resume the
+  // same direction after a stop" falls back to double_press_trigger_.
+  void set_has_triple_press_action(bool has_triple_press_action) {
+    this->has_triple_press_action_ = has_triple_press_action;
+  }
+  void set_triple_press_settle(uint32_t triple_press_settle) { this->triple_press_settle_ = triple_press_settle; }
 
   cover::CoverTraits get_traits() override;
 
@@ -37,8 +48,17 @@ class GdoCover : public cover::Cover, public Component {
   binary_sensor::BinarySensor *close_endstop_{nullptr};
   uint32_t open_duration_{0};
   uint32_t close_duration_{0};
+  uint32_t double_press_settle_{0};
+  bool has_triple_press_action_{false};
+  uint32_t triple_press_settle_{0};
+  // millis() deadline: recompute_position_() credits no movement before
+  // this, because a double or triple press leaves the door mechanically
+  // stationary for double_press_settle_ / triple_press_settle_ after the
+  // command is issued (see cpp for how this is set and consumed).
+  uint32_t settle_until_{0};
   Trigger<> single_press_trigger_;
   Trigger<> double_press_trigger_;
+  Trigger<> triple_press_trigger_;
   Trigger<> *prev_command_trigger_{nullptr};
   uint32_t last_recompute_time_{0};
   uint32_t start_dir_time_{0};
