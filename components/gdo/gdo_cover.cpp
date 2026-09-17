@@ -60,6 +60,10 @@ void GdoCover::setup() {
         // Reached the open endstop. Update state
         float dur = (millis() - this->start_dir_time_) / 1e3f;
         ESP_LOGI(TAG, "Open endstop reached. Took %.1fs.", dur);
+        // PATCHED: remember we were opening before we drop to idle below.
+        if (this->current_operation != COVER_OPERATION_IDLE) {
+          this->last_moving_operation_ = this->current_operation;
+        }
         this->position = COVER_OPEN;
         this->target_position_ = COVER_OPEN;
         this->current_operation = COVER_OPERATION_IDLE;
@@ -82,6 +86,10 @@ void GdoCover::setup() {
         // Reached the closed endstop. Update state
         float dur = (millis() - this->start_dir_time_) / 1e3f;
         ESP_LOGI(TAG, "Closed endstop reached. Took %.1fs.", dur);
+        // PATCHED: remember we were closing before we drop to idle below.
+        if (this->current_operation != COVER_OPERATION_IDLE) {
+          this->last_moving_operation_ = this->current_operation;
+        }
         this->position = COVER_CLOSED;
         this->target_position_ = COVER_CLOSED;
         this->current_operation = COVER_OPERATION_IDLE;
@@ -192,18 +200,34 @@ void GdoCover::start_direction_(CoverOperation dir, bool perform_trigger) {
     return;
   }
 
+  // PATCHED: remember the direction we're actually leaving, before we
+  // overwrite current_operation below. This is what lets the IDLE/partial
+  // branches further down tell "reverse of last motion" (one press, on our
+  // stop-then-reverse toggle motor) apart from "same as last motion" (see
+  // note below -- that case needs three presses, which this component's
+  // single/double press model can't express).
+  if (this->current_operation != COVER_OPERATION_IDLE) {
+    this->last_moving_operation_ = this->current_operation;
+  }
+
   this->recompute_position_();
   Trigger<> *trig;
   switch (dir) {
     case COVER_OPERATION_IDLE:
       switch (this->current_operation) {
         case COVER_OPERATION_OPENING:
+          // Confirmed motor behavior: a single press always stops the door,
+          // opening or closing.
           ESP_LOGI(TAG, "Door is opening. Asked to stop.");
           trig = &this->single_press_trigger_;
           break;
         case COVER_OPERATION_CLOSING:
+          // PATCHED: was double_press_trigger_. On our toggle motor a single
+          // press stops the door in EITHER direction -- the previous double
+          // press here stopped it and then immediately fired it back off
+          // again (the classic "stop while closing re-opens" symptom).
           ESP_LOGI(TAG, "Door is closing. Asked to stop.");
-          trig = &this->double_press_trigger_;
+          trig = &this->single_press_trigger_;
           break;
         default:
           return;
@@ -218,14 +242,34 @@ void GdoCover::start_direction_(CoverOperation dir, bool perform_trigger) {
           } else if (this->position == COVER_OPEN) {
             ESP_LOGW(TAG, "Door is fully open. Cannot open more.");
             return;
+          } else if (this->last_moving_operation_ == COVER_OPERATION_CLOSING) {
+            // PATCHED: stopped mid-close, now asked to open -- that's a
+            // reversal, one press does it.
+            ESP_LOGI(TAG, "Door is partially open (was closing). Asked to open: single press.");
+            trig = &this->single_press_trigger_;
           } else {
-            ESP_LOGI(TAG, "Door is partially open. Asked to open more.");
+            // PATCHED: stopped mid-open, now asked to open (i.e. "keep
+            // going the way it was already going"). On a motor where the
+            // very next press always reverses, resuming the SAME direction
+            // actually needs stop -> reverse -> stop -> reverse, i.e. three
+            // presses. This component only has single/double press actions,
+            // so this specific case can't be done cleanly -- double press
+            // is the closest available approximation and will look like a
+            // brief flinch the wrong way before settling. If you hit this
+            // in practice, say so and we can add a third press stage.
+            ESP_LOGW(TAG, "Door is partially open (was opening). Asked to open more: "
+                          "this toggle motor can't resume the same direction after a "
+                          "stop without a 3rd press -- expect a brief flinch.");
             trig = &this->double_press_trigger_;
           }
           break;
         case COVER_OPERATION_CLOSING:
+          // PATCHED: was single_press_trigger_. On our motor a single press
+          // while closing only STOPS it -- it takes a second, separate
+          // press to then reverse into opening. Double press (stop, then
+          // go) is what actually gets from closing to opening.
           ESP_LOGI(TAG, "Door is closing. Asked to open.");
-          trig = &this->single_press_trigger_;
+          trig = &this->double_press_trigger_;
           break;
         default:
           return;
@@ -240,12 +284,23 @@ void GdoCover::start_direction_(CoverOperation dir, bool perform_trigger) {
           } else if (this->position == COVER_OPEN) {
             ESP_LOGI(TAG, "Door is fully open. Asked to close.");
             trig = &this->single_press_trigger_;
-          } else {
-            ESP_LOGI(TAG, "Door is partially open. Asked to close more.");
+          } else if (this->last_moving_operation_ == COVER_OPERATION_OPENING) {
+            // PATCHED: stopped mid-open, now asked to close -- a reversal,
+            // one press does it.
+            ESP_LOGI(TAG, "Door is partially open (was opening). Asked to close: single press.");
             trig = &this->single_press_trigger_;
+          } else {
+            // PATCHED: same "resume the same direction" limitation as
+            // above, mirrored for closing.
+            ESP_LOGW(TAG, "Door is partially open (was closing). Asked to close more: "
+                          "this toggle motor can't resume the same direction after a "
+                          "stop without a 3rd press -- expect a brief flinch.");
+            trig = &this->double_press_trigger_;
           }
           break;
         case COVER_OPERATION_OPENING:
+          // Already correct: single press while opening only stops it, so
+          // getting all the way to closing needs stop-then-go (double).
           ESP_LOGI(TAG, "Door is opening. Asked to close.");
           trig = &this->double_press_trigger_;
           break;

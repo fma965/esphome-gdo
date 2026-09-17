@@ -44,6 +44,13 @@ class GdoCover : public cover::Cover, public Component {
   uint32_t start_dir_time_{0};
   uint32_t last_publish_time_{0};
   float target_position_{0};
+
+  // PATCHED: remembers which direction the door was actually moving in the
+  // last time it was NOT idle, so a request from a stopped/partial position
+  // can tell "reverse of last motion" (needs one press on our toggle motor)
+  // apart from "same as last motion" (would need three presses, which this
+  // component can't express -- see gdo_cover.cpp for details).
+  cover::CoverOperation last_moving_operation_{cover::COVER_OPERATION_IDLE};
 };
 
 }  // namespace gdo
